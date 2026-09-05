@@ -1,0 +1,10 @@
+{
+  "description": "Manage school supply inventory with real-time tracking, user roles, stock control, reports, and backups designed for staff and inventory managers.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
