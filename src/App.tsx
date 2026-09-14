@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Role = "Staff" | "Manager";
@@ -839,26 +839,41 @@ const StockManagement = ({ products, setProducts, transactions, setTransactions,
     setInItems([]); showAlert("success", `Stock-In confirmed. ${inItems.length} item(s) recorded.`);
   };
   // Stock-Out
-  const [outCode, setOutCode] = useState(""); const [outProduct, setOutProduct] = useState<Product | null>(null);
-  const [outQty, setOutQty] = useState(""); const [outItems, setOutItems] = useState<{ product: Product; qty: number }[]>([]);
+  const [outCode, setOutCode] = useState("");
+  const [outProduct, setOutProduct] = useState<Product | null>(null);
+  const [outQty, setOutQty] = useState("");
+  const [outQtyError, setOutQtyError] = useState("");
+  const [outItems, setOutItems] = useState<{ product: Product; qty: number; newRow?: boolean }[]>([]);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const outQtyInputRef = useRef<HTMLInputElement>(null);
+  const focusBarcode = useCallback(() => { setTimeout(() => barcodeInputRef.current?.focus(), 50); }, []);
+  useEffect(() => { if (tab === "Stock-Out") focusBarcode(); }, [tab]);
   const lookupProduct = () => {
-    const p = products.find(x => x.id === outCode || x.barcode === outCode);
-    if (!p) { showAlert("error", "Product not found. Check the code or barcode."); return; }
-    setOutProduct(p); setOutCode("");
+    if (!outCode.trim()) return;
+    const p = products.find(x => x.id === outCode.trim() || x.barcode === outCode.trim());
+    if (!p) { showAlert("error", `Product not found for code "${outCode}". Check the barcode or product ID.`); focusBarcode(); return; }
+    setOutProduct(p); setOutCode(""); setOutQty(""); setOutQtyError("");
+    setTimeout(() => outQtyInputRef.current?.focus(), 60);
   };
   const addOutItem = () => {
     if (!outProduct || !outQty) return;
     const qty = parseInt(outQty);
-    if (qty > outProduct.stock) { showAlert("error", `Insufficient stock. Available quantity: ${outProduct.stock} ${outProduct.unit}.`); return; }
-    setOutItems(it => [...it, { product: outProduct, qty }]);
-    setOutProduct(null); setOutQty("");
+    if (isNaN(qty) || qty <= 0) { setOutQtyError("Enter a valid quantity greater than 0."); return; }
+    if (qty > outProduct.stock) { setOutQtyError(`Insufficient stock. Only ${outProduct.stock} ${outProduct.unit} available.`); return; }
+    setOutItems(it => [...it, { product: outProduct, qty, newRow: true }]);
+    setTimeout(() => setOutItems(it => it.map((x, i) => i === it.length - 1 ? { ...x, newRow: false } : x)), 600);
+    setOutProduct(null); setOutQty(""); setOutQtyError("");
+    focusBarcode();
   };
   const confirmStockOut = () => {
     if (outItems.length === 0) return;
     const newTxs = outItems.map(item => ({ id: nextTxId(), type: "OUT" as const, product: item.product.id, qty: item.qty, date: new Date().toISOString().slice(0, 16).replace("T", " "), user: currentUser.username }));
     setTransactions([...transactions, ...newTxs]);
     setProducts(products.map(p => { const it = outItems.find(i => i.product.id === p.id); return it ? { ...p, stock: p.stock - it.qty } : p; }));
-    setOutItems([]); showAlert("success", `Stock-Out confirmed. ${outItems.length} item(s) recorded.`);
+    const count = outItems.length;
+    setOutItems([]); setOutProduct(null); setOutCode(""); setOutQty("");
+    showAlert("success", `Stock-Out confirmed. ${count} item line${count !== 1 ? "s" : ""} recorded successfully.`);
+    focusBarcode();
   };
   // Physical Count
   const [counts, setCounts] = useState<Record<string, string>>({});
@@ -892,12 +907,22 @@ const StockManagement = ({ products, setProducts, transactions, setTransactions,
       {tab === "Stock-In" && (
         <div className="flex flex-col gap-4">
           <Card className="p-5 max-w-2xl">
-            <h3 className="font-bold text-slate-700 font-work text-sm mb-4">Add Item to Stock-In</h3>
+            <h3 className="font-bold text-slate-800 font-work text-sm mb-4">Add Item to Stock-In</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select label="Product" value={inForm.product} onChange={e => setInForm(f => ({ ...f, product: e.target.value }))}>
                 <option value="">— Select product —</option>
                 {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
               </Select>
+              {inForm.product && (() => {
+                const selP = products.find(p => p.id === inForm.product);
+                return selP ? (
+                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-md px-4 py-2 text-sm self-end">
+                    <span className="text-slate-500 font-work text-xs">Current Stock</span>
+                    <span className={`font-bold font-work text-lg ${selP.stock === 0 ? "text-red-600" : selP.stock <= selP.reorderLevel ? "text-amber-600" : "text-slate-800"}`}>{selP.stock}</span>
+                    <span className="text-slate-400 text-xs">{selP.unit}</span>
+                  </div>
+                ) : null;
+              })()}
               <Input label="Quantity Received" type="number" value={inForm.qty} onChange={e => setInForm(f => ({ ...f, qty: e.target.value }))} placeholder="e.g. 50" />
               <Select label="Supplier" value={inForm.supplier} onChange={e => setInForm(f => ({ ...f, supplier: e.target.value }))}>
                 <option value="">— Select supplier —</option>
@@ -935,58 +960,129 @@ const StockManagement = ({ products, setProducts, transactions, setTransactions,
           )}
         </div>
       )}
-      {tab === "Stock-Out" && (
-        <div className="flex flex-col gap-4">
-          <Card className="p-5 max-w-xl">
-            <h3 className="font-bold text-slate-700 font-work text-sm mb-3">Scan Barcode / Enter Item Code</h3>
-            <div className="flex gap-3">
-              <input className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm font-mono-data focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Barcode or Product Code…" value={outCode} onChange={e => setOutCode(e.target.value)} onKeyDown={e => e.key === "Enter" && lookupProduct()} />
-              <Btn onClick={lookupProduct} disabled={!outCode}>Lookup</Btn>
+      {tab === "Stock-Out" && (() => {
+        const outQtyNum = parseInt(outQty);
+        const remaining = outProduct && !isNaN(outQtyNum) && outQtyNum > 0 ? outProduct.stock - outQtyNum : null;
+        const isOverstock = remaining !== null && remaining < 0;
+        const transactionValid = outItems.length > 0;
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+            {/* LEFT: Input Zone */}
+            <div className="flex flex-col gap-4">
+              <Card className="p-5">
+                <h3 className="font-bold text-slate-800 font-work text-base mb-1">Scan Barcode / Enter Item Code</h3>
+                <p className="text-xs text-slate-400 font-work mb-3">Scan or type a barcode or product code, then press Enter.</p>
+                <div className="flex gap-2">
+                  <input
+                    ref={barcodeInputRef}
+                    className="flex-1 border-2 border-slate-300 rounded-md px-3 py-2.5 text-sm font-mono-data focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
+                    placeholder="Barcode or Product Code…"
+                    value={outCode}
+                    onChange={e => setOutCode(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && lookupProduct()}
+                    autoComplete="off"
+                  />
+                  <Btn onClick={lookupProduct} disabled={!outCode.trim()}>Lookup</Btn>
+                </div>
+              </Card>
+              {outProduct ? (
+                <Card className="p-5 border-2 border-blue-300">
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <p className="font-bold text-slate-900 font-work text-base">{outProduct.name}</p>
+                      <p className="text-xs text-slate-500 font-mono-data mt-0.5">{outProduct.id} · {outProduct.barcode}</p>
+                    </div>
+                    <button onClick={() => { setOutProduct(null); setOutQty(""); setOutQtyError(""); focusBarcode(); }} className="text-slate-400 hover:text-slate-700 text-lg leading-none mt-1">×</button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 mb-4 bg-slate-50 rounded-lg p-3">
+                    <div className="text-center">
+                      <p className="text-xs text-slate-500 font-work mb-1">Current Stock</p>
+                      <p className={`text-2xl font-bold font-work ${outProduct.stock === 0 ? "text-red-600" : outProduct.stock <= outProduct.reorderLevel ? "text-amber-600" : "text-slate-800"}`}>{outProduct.stock}</p>
+                      <p className="text-xs text-slate-400">{outProduct.unit}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-xs text-slate-500 font-work mb-1">Removing</p>
+                      <p className={`text-2xl font-bold font-work ${outQtyNum > 0 ? "text-red-600" : "text-slate-300"}`}>{outQtyNum > 0 ? outQtyNum : "—"}</p>
+                      <p className="text-xs text-slate-400">{outProduct.unit}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-xs text-slate-500 font-work mb-1">Remaining</p>
+                      <p className={`text-2xl font-bold font-work ${isOverstock ? "text-red-600" : remaining !== null ? "text-emerald-600" : "text-slate-300"}`}>
+                        {remaining !== null ? remaining : "—"}
+                      </p>
+                      <p className="text-xs text-slate-400">{outProduct.unit}</p>
+                    </div>
+                  </div>
+                  {outQtyError && <div className="mb-3"><Alert type="error" message={outQtyError} /></div>}
+                  <div className="flex gap-3 items-end">
+                    <div className="flex-1">
+                      <label className="text-xs font-semibold text-slate-600 font-work uppercase tracking-wide block mb-1">Quantity to Remove</label>
+                      <input
+                        ref={outQtyInputRef}
+                        type="number"
+                        min={1}
+                        max={outProduct.stock}
+                        className={`w-full border-2 rounded-md px-3 py-2.5 text-sm font-work focus:outline-none focus:ring-2 transition ${isOverstock ? "border-red-400 bg-red-50 focus:ring-red-100" : "border-slate-300 focus:border-blue-500 focus:ring-blue-100"}`}
+                        placeholder={`Max: ${outProduct.stock}`}
+                        value={outQty}
+                        onChange={e => { setOutQty(e.target.value); setOutQtyError(""); }}
+                        onKeyDown={e => e.key === "Enter" && !isOverstock && addOutItem()}
+                      />
+                    </div>
+                    <Btn onClick={addOutItem} disabled={!outQty || isOverstock || outProduct.stock === 0}>Add to Transaction</Btn>
+                  </div>
+                  {outProduct.stock === 0 && <p className="text-xs text-red-600 font-work mt-2 font-semibold">⚠ This product is out of stock and cannot be issued.</p>}
+                </Card>
+              ) : (
+                <div className="flex items-center justify-center border-2 border-dashed border-slate-200 rounded-lg p-8 text-slate-400">
+                  <div className="text-center">
+                    <div className="text-3xl mb-2">🔍</div>
+                    <p className="text-sm font-work">Scan or enter a product code above to identify the item.</p>
+                  </div>
+                </div>
+              )}
             </div>
-            {outProduct && (
-              <div className="mt-4 border border-blue-200 bg-blue-50 rounded-lg p-4">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <p className="font-bold text-slate-800 font-work">{outProduct.name}</p>
-                    <p className="text-xs text-slate-500 font-mono-data">{outProduct.id}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-work">Current Stock</p>
-                    <p className="text-2xl font-bold font-work text-slate-800">{outProduct.stock} <span className="text-sm font-normal text-slate-500">{outProduct.unit}</span></p>
-                  </div>
+            {/* RIGHT: Current Transaction */}
+            <Card className="flex flex-col">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-800 font-work text-sm">Current Transaction</h4>
+                  <p className="text-xs text-slate-400 font-work">{outItems.length} item{outItems.length !== 1 ? "s" : ""} queued</p>
                 </div>
-                <div className="flex gap-3 items-end">
-                  <div className="flex-1"><Input label="Quantity to Remove" type="number" value={outQty} onChange={e => setOutQty(e.target.value)} /></div>
-                  <Btn onClick={addOutItem} disabled={!outQty}>Add to Transaction</Btn>
+                <div className="flex gap-2">
+                  {outItems.length > 0 && <Btn variant="secondary" size="sm" onClick={() => { setOutItems([]); focusBarcode(); }}>Clear</Btn>}
+                  <Btn onClick={confirmStockOut} disabled={!transactionValid}>Confirm Stock-Out</Btn>
                 </div>
               </div>
-            )}
-          </Card>
-          {outItems.length > 0 && (
-            <Card>
-              <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
-                <h4 className="font-bold text-slate-700 font-work text-sm">Stock-Out Transaction ({outItems.length} item{outItems.length !== 1 ? "s" : ""})</h4>
-                <Btn onClick={confirmStockOut}>Confirm Stock-Out</Btn>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-slate-50 border-b border-slate-100"><tr><Th>Product</Th><Th>Current Stock</Th><Th>Qty to Remove</Th><Th>{" "}</Th></tr></thead>
-                  <tbody>
-                    {outItems.map((it, i) => (
-                      <tr key={i} className="border-b border-slate-50">
-                        <Td className="font-medium">{it.product.name}</Td>
-                        <Td className="font-work">{it.product.stock} {it.product.unit}</Td>
-                        <Td className="font-work font-semibold text-red-600">−{it.qty}</Td>
-                        <Td><Btn variant="ghost" size="sm" onClick={() => setOutItems(outItems.filter((_, j) => j !== i))}>Remove</Btn></Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="overflow-x-auto flex-1">
+                {outItems.length === 0 ? (
+                  <div className="flex items-center justify-center py-12 text-slate-300">
+                    <p className="text-sm font-work">No items added yet</p>
+                  </div>
+                ) : (
+                  <table className="w-full">
+                    <thead className="bg-slate-50 border-b border-slate-100">
+                      <tr><Th>Code</Th><Th>Product</Th><Th>Stock</Th><Th>−Qty</Th><Th>Remaining</Th><Th>{" "}</Th></tr>
+                    </thead>
+                    <tbody>
+                      {outItems.map((it, i) => (
+                        <tr key={i} className={`border-b border-slate-50 transition-colors ${it.newRow ? "bg-emerald-50" : "hover:bg-slate-50"}`}>
+                          <Td><span className="font-mono-data text-xs text-slate-400">{it.product.id}</span></Td>
+                          <Td className="font-medium text-slate-800">{it.product.name}</Td>
+                          <Td><span className="font-mono-data text-xs text-slate-500">{it.product.stock} {it.product.unit}</span></Td>
+                          <Td><span className="font-mono-data text-sm font-bold text-red-600">−{it.qty}</span></Td>
+                          <Td><span className="font-mono-data text-sm font-bold text-emerald-700">{it.product.stock - it.qty}</span></Td>
+                          <Td><button onClick={() => setOutItems(outItems.filter((_, j) => j !== i))} className="text-slate-300 hover:text-red-500 text-lg leading-none transition">×</button></Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </Card>
-          )}
-        </div>
-      )}
+          </div>
+        );
+      })()}
       {tab === "Physical Count" && (
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
@@ -1025,28 +1121,53 @@ const StockManagement = ({ products, setProducts, transactions, setTransactions,
       {tab === "Stock Adjustment" && (
         <Card className="p-5 max-w-lg">
           <div className="flex flex-col gap-4">
-            <Alert type="warning" message="Stock adjustments directly alter recorded inventory. A reason is required and this action will be logged." />
+            <Alert type="warning" message="Stock adjustments directly alter recorded inventory quantities. A reason is required. This action is logged and cannot be undone." />
             <Select label="Product" value={adjForm.product} onChange={e => setAdjForm(f => ({ ...f, product: e.target.value }))}>
               <option value="">— Select product —</option>
               {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
             </Select>
-            {adjProduct && (
-              <div className="bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-sm">
-                <span className="text-slate-500 font-work">Current Quantity:</span> <span className="font-bold font-work">{adjProduct.stock} {adjProduct.unit}</span>
-              </div>
-            )}
+            {adjProduct && (() => {
+              const adjNew = parseInt(adjForm.adjustedQty);
+              const adjDiff = !isNaN(adjNew) ? adjNew - adjProduct.stock : null;
+              return (
+                <>
+                  <div className="grid grid-cols-3 gap-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                    <div>
+                      <p className="text-xs text-slate-500 font-work mb-1">Current Qty</p>
+                      <p className="text-xl font-bold font-work text-slate-800">{adjProduct.stock}</p>
+                      <p className="text-xs text-slate-400">{adjProduct.unit}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500 font-work mb-1">New Qty</p>
+                      <p className={`text-xl font-bold font-work ${isNaN(adjNew) ? "text-slate-300" : "text-blue-700"}`}>{isNaN(adjNew) ? "—" : adjNew}</p>
+                      <p className="text-xs text-slate-400">{adjProduct.unit}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500 font-work mb-1">Difference</p>
+                      <p className={`text-xl font-bold font-work ${adjDiff === null ? "text-slate-300" : adjDiff < 0 ? "text-red-600" : adjDiff > 0 ? "text-emerald-600" : "text-slate-500"}`}>
+                        {adjDiff === null ? "—" : adjDiff > 0 ? `+${adjDiff}` : adjDiff}
+                      </p>
+                      <p className="text-xs text-slate-400">{adjProduct.unit}</p>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
             <Input label="Adjusted Quantity" type="number" value={adjForm.adjustedQty} onChange={e => setAdjForm(f => ({ ...f, adjustedQty: e.target.value }))} placeholder="Enter corrected quantity" />
-            <Select label="Reason" value={adjForm.reason} onChange={e => setAdjForm(f => ({ ...f, reason: e.target.value }))}>
+            <Select label="Reason (Required)" value={adjForm.reason} onChange={e => setAdjForm(f => ({ ...f, reason: e.target.value }))}>
               {reasons.map(r => <option key={r}>{r}</option>)}
             </Select>
-            <Textarea label="Remarks" value={adjForm.remarks} onChange={e => setAdjForm(f => ({ ...f, remarks: e.target.value }))} rows={2} placeholder="Additional notes…" />
+            <Textarea label="Remarks" value={adjForm.remarks} onChange={e => setAdjForm(f => ({ ...f, remarks: e.target.value }))} rows={2} placeholder="Describe what happened…" />
             <Btn onClick={() => setAdjModal(true)} disabled={!adjForm.product || !adjForm.adjustedQty}>Submit Adjustment</Btn>
           </div>
           {adjModal && adjProduct && (
             <Modal title="Confirm Stock Adjustment" onClose={() => setAdjModal(false)}>
               <div className="flex flex-col gap-4">
-                <Alert type="warning" message={`This will change "${adjProduct.name}" from ${adjProduct.stock} to ${adjForm.adjustedQty} ${adjProduct.unit}. Reason: ${adjForm.reason}.`} />
-                <div className="flex gap-3"><Btn variant="danger" onClick={submitAdj}>Confirm Adjustment</Btn><Btn variant="secondary" onClick={() => setAdjModal(false)}>Cancel</Btn></div>
+                <Alert type="warning" message={`You are changing "${adjProduct.name}" from ${adjProduct.stock} to ${adjForm.adjustedQty} ${adjProduct.unit} (${parseInt(adjForm.adjustedQty) - adjProduct.stock > 0 ? "+" : ""}${parseInt(adjForm.adjustedQty) - adjProduct.stock} units). Reason: ${adjForm.reason}. This will be recorded in the audit log.`} />
+                <div className="flex gap-3">
+                  <Btn variant="secondary" onClick={() => setAdjModal(false)}>Cancel</Btn>
+                  <Btn variant="danger" onClick={submitAdj}>Confirm Adjustment</Btn>
+                </div>
               </div>
             </Modal>
           )}
@@ -1066,12 +1187,15 @@ const InventoryManagement = ({ products, setProducts, suppliers, initialTab }: {
   useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
   const [reorderEdit, setReorderEdit] = useState<Record<string, string>>({});
   const [updateEdit, setUpdateEdit] = useState<Record<string, Partial<Product>>>({});
-  const filtered = products.filter(p => {
-    if (filter === "Low Stock" && !(p.stock > 0 && p.stock <= p.reorderLevel)) return false;
-    if (filter === "Out of Stock" && p.stock !== 0) return false;
-    if (filter === "Normal" && (p.stock <= p.reorderLevel)) return false;
-    return p.name.toLowerCase().includes(search.toLowerCase()) || p.id.toLowerCase().includes(search.toLowerCase());
-  });
+  const urgency = (p: Product) => p.stock === 0 ? 0 : p.stock <= p.reorderLevel ? 1 : 2;
+  const filtered = products
+    .filter(p => {
+      if (filter === "Low Stock" && !(p.stock > 0 && p.stock <= p.reorderLevel)) return false;
+      if (filter === "Out of Stock" && p.stock !== 0) return false;
+      if (filter === "Normal" && p.stock <= p.reorderLevel) return false;
+      return p.name.toLowerCase().includes(search.toLowerCase()) || p.id.toLowerCase().includes(search.toLowerCase());
+    })
+    .sort((a, b) => urgency(a) - urgency(b));
   const low = products.filter(p => p.stock > 0 && p.stock <= p.reorderLevel);
   const out = products.filter(p => p.stock === 0);
   const supplierName = (id: string) => suppliers.find(s => s.id === id)?.name || id;
@@ -1096,16 +1220,20 @@ const InventoryManagement = ({ products, setProducts, suppliers, initialTab }: {
             <input className="ml-auto border border-slate-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48" placeholder="Search product…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <Card>
+            <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
+              <span className="text-xs text-slate-400 font-work">Sorted by urgency — out of stock first, then low stock, then normal.</span>
+              <span className="ml-auto text-xs text-slate-400 font-work">{filtered.length} product{filtered.length !== 1 ? "s" : ""}</span>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-slate-50 border-b border-slate-200"><tr><Th>Product</Th><Th>Category</Th><Th>Current Stock</Th><Th>Reorder Level</Th><Th>Supplier</Th><Th>Status</Th></tr></thead>
                 <tbody>
                   {filtered.length === 0 ? <EmptyTable /> : filtered.map(p => (
-                    <tr key={p.id} className="border-b border-slate-100 hover:bg-slate-50 transition">
+                    <tr key={p.id} className={`border-b border-slate-100 hover:bg-slate-50 transition ${p.stock === 0 ? "bg-red-50/40" : p.stock <= p.reorderLevel ? "bg-amber-50/30" : ""}`}>
                       <Td><span className="font-medium">{p.name}</span><span className="text-xs text-slate-400 font-mono-data ml-2">{p.id}</span></Td>
                       <Td><Badge label={p.category} color="gray" /></Td>
-                      <Td><span className={`font-bold font-work ${p.stock === 0 ? "text-red-600" : p.stock <= p.reorderLevel ? "text-amber-600" : "text-slate-800"}`}>{p.stock}</span> <span className="text-slate-400 text-xs">{p.unit}</span></Td>
-                      <Td className="text-slate-500 font-work">{p.reorderLevel}</Td>
+                      <Td><span className={`font-bold font-mono-data text-sm ${p.stock === 0 ? "text-red-600" : p.stock <= p.reorderLevel ? "text-amber-600" : "text-slate-800"}`}>{p.stock}</span> <span className="text-slate-400 text-xs">{p.unit}</span></Td>
+                      <Td className="text-slate-500 font-mono-data text-sm">{p.reorderLevel}</Td>
                       <Td className="text-slate-500 text-xs">{supplierName(p.supplier)}</Td>
                       <Td><StockBadge stock={p.stock} reorder={p.reorderLevel} /></Td>
                     </tr>
@@ -1118,18 +1246,26 @@ const InventoryManagement = ({ products, setProducts, suppliers, initialTab }: {
       )}
       {tab === "Reorder Levels" && (
         <Card>
+          <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/60">
+            <p className="text-xs text-slate-500 font-work">Set the quantity at which a product is considered low stock. When current stock falls at or below this level, a low-stock alert is triggered.</p>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-slate-50 border-b border-slate-200"><tr><Th>Product</Th><Th>Current Stock</Th><Th>Reorder Level</Th><Th>Action</Th></tr></thead>
+              <thead className="bg-slate-50 border-b border-slate-200"><tr><Th>Product</Th><Th>Current Stock</Th><Th>Status</Th><Th>Reorder Level</Th><Th>Action</Th></tr></thead>
               <tbody>
                 {products.map(p => (
                   <tr key={p.id} className="border-b border-slate-100 hover:bg-slate-50 transition">
-                    <Td><span className="font-medium">{p.name}</span></Td>
-                    <Td className="font-work font-semibold">{p.stock} {p.unit}</Td>
+                    <Td><span className="font-medium">{p.name}</span><span className="font-mono-data text-xs text-slate-400 ml-2">{p.id}</span></Td>
+                    <Td><span className="font-mono-data text-sm font-semibold">{p.stock}</span> <span className="text-slate-400 text-xs">{p.unit}</span></Td>
+                    <Td><StockBadge stock={p.stock} reorder={p.reorderLevel} /></Td>
                     <Td>
-                      <input type="number" className="w-24 border border-slate-300 rounded px-2 py-1 text-sm font-work focus:outline-none focus:ring-2 focus:ring-blue-500" value={reorderEdit[p.id] !== undefined ? reorderEdit[p.id] : p.reorderLevel} onChange={e => setReorderEdit(r => ({ ...r, [p.id]: e.target.value }))} />
+                      <input type="number" min={1} className="w-24 border border-slate-300 rounded px-2 py-1.5 text-sm font-mono-data focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-400" value={reorderEdit[p.id] !== undefined ? reorderEdit[p.id] : p.reorderLevel} onChange={e => setReorderEdit(r => ({ ...r, [p.id]: e.target.value }))} />
                     </Td>
-                    <Td><Btn variant="secondary" size="sm" onClick={() => saveReorder(p.id)} disabled={reorderEdit[p.id] === undefined || reorderEdit[p.id] === String(p.reorderLevel)}>Save</Btn></Td>
+                    <Td>
+                      <Btn variant={reorderEdit[p.id] !== undefined && reorderEdit[p.id] !== String(p.reorderLevel) ? "primary" : "secondary"} size="sm" onClick={() => saveReorder(p.id)} disabled={reorderEdit[p.id] === undefined || reorderEdit[p.id] === String(p.reorderLevel)}>
+                        Save Reorder Level
+                      </Btn>
+                    </Td>
                   </tr>
                 ))}
               </tbody>
